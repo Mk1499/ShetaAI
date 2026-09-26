@@ -17,8 +17,8 @@ import { ThemedText } from "@/components/themed-text";
 import { ThemedView } from "@/components/themed-view";
 import { WebBadge } from "@/components/web-badge";
 import { BottomTabInset, MaxContentWidth, Spacing } from "@/constants/theme";
-
 import { OPENROUTER_API_KEY } from "@/secrets";
+import * as Speech from "expo-speech";
 
 const OPENROUTER_MODEL = "openrouter/free";
 
@@ -27,6 +27,15 @@ type ChatMessage = {
   role: "user" | "assistant";
   content: string;
 };
+
+const SYSTEM_PROMPT = `
+انت مساعد صوتي بيرد باللهجة المصرية العامية بس، مش عربي فصحى ومش لهجات تانية.
+قواعد ثابتة لازم تتبعها في كل رد:
+- منعًا باتًا استخدام أي emojis أو رموز تعبيرية
+- الردود تكون قصيرة ومباشرة، مناسبة إنها تتقرا بصوت عالي (text-to-speech)
+- ماتستخدمش markdown أو تنسيقات زي **, #, -
+- ماتكتبش أرقام أو رموز صعب نطقها بالصوت، اكتبها كلام عادي
+`.trim();
 
 async function askOpenRouter(userText: string): Promise<string> {
   const response = await fetch(
@@ -39,7 +48,10 @@ async function askOpenRouter(userText: string): Promise<string> {
       },
       body: JSON.stringify({
         model: OPENROUTER_MODEL,
-        messages: [{ role: "user", content: userText }],
+        messages: [
+          { role: "user", content: userText },
+          { role: "system", content: SYSTEM_PROMPT },
+        ],
       }),
     },
   );
@@ -58,6 +70,7 @@ export default function HomeScreen() {
   const [transcript, setTranscript] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(false);
+  const [speaking, setSpeaking] = useState(false);
   const latestTranscript = useRef("");
   const silenceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -82,8 +95,15 @@ export default function HomeScreen() {
     console.log("speech recognition error:", event.error, event.message);
   });
 
+  // (async () => {
+  //   const voices = await Speech.getAvailableVoicesAsync();
+  //   const arabicVoices = voices.filter((v) => v.language.startsWith("ar"));
+  //   console.log(JSON.stringify(arabicVoices, null, 2));
+  // })();
+
   const handleFinalTranscript = async (text: string) => {
     if (!text.trim()) return;
+
     const userMessage: ChatMessage = {
       id: Date.now().toString(),
       role: "user",
@@ -102,6 +122,13 @@ export default function HomeScreen() {
         content: reply,
       };
       setMessages((prev) => [...prev, assistantMessage]);
+      Speech.speak(reply, {
+        language: "ar-EG",
+        onDone: () => setSpeaking(false),
+        onStopped: () => setSpeaking(false),
+        onError: () => setSpeaking(false),
+      });
+      setSpeaking(true);
     } catch (err) {
       console.log("openrouter error:", err);
     } finally {
@@ -125,7 +152,7 @@ export default function HomeScreen() {
       lang: "ar-SA",
       interimResults: true,
       continuous: true,
-      requiresOnDeviceRecognition: false,
+      requiresOnDeviceRecognition: true,
     });
   };
 
