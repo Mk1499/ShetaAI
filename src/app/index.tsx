@@ -1,10 +1,15 @@
-import * as Device from "expo-device";
 import {
   ExpoSpeechRecognitionModule,
   useSpeechRecognitionEvent,
 } from "expo-speech-recognition";
 import { useRef, useState } from "react";
-import { Platform, Pressable, StyleSheet } from "react-native";
+import {
+  ActivityIndicator,
+  FlatList,
+  Platform,
+  Pressable,
+  StyleSheet,
+} from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { AnimatedIcon } from "@/components/animated-icon";
@@ -13,65 +18,115 @@ import { ThemedView } from "@/components/themed-view";
 import { WebBadge } from "@/components/web-badge";
 import { BottomTabInset, MaxContentWidth, Spacing } from "@/constants/theme";
 
-function getDevMenuHint() {
-  if (Platform.OS === "web") {
-    return <ThemedText type="small">use browser devtools</ThemedText>;
-  }
-  if (Device.isDevice) {
-    return (
-      <ThemedText type="small">
-        shake device or press <ThemedText type="code">m</ThemedText> in terminal
-      </ThemedText>
-    );
-  }
-  const shortcut = Platform.OS === "android" ? "cmd+m (or ctrl+m)" : "cmd+d";
-  return (
-    <ThemedText type="small">
-      press <ThemedText type="code">{shortcut}</ThemedText>
-    </ThemedText>
+import { OPENROUTER_API_KEY } from "@/secrets";
+
+const OPENROUTER_MODEL = "openrouter/free";
+
+type ChatMessage = {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+};
+
+async function askOpenRouter(userText: string): Promise<string> {
+  const response = await fetch(
+    "https://openrouter.ai/api/v1/chat/completions",
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: OPENROUTER_MODEL,
+        messages: [{ role: "user", content: userText }],
+      }),
+    },
   );
+
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`OpenRouter error ${response.status}: ${errText}`);
+  }
+
+  const data = await response.json();
+  return data.choices?.[0]?.message?.content ?? "";
 }
 
 export default function HomeScreen() {
   const [recognizing, setRecognizing] = useState(false);
   const [transcript, setTranscript] = useState("");
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [loading, setLoading] = useState(false);
+  const latestTranscript = useRef("");
   const silenceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useSpeechRecognitionEvent("start", () => setRecognizing(true));
-  useSpeechRecognitionEvent("end", () => setRecognizing(false));
   useSpeechRecognitionEvent("result", (event) => {
-    setTranscript(event.results[0]?.transcript ?? "");
+    const text = event.results[0]?.transcript ?? "";
+    setTranscript(text);
+    latestTranscript.current = text;
     if (silenceTimer.current) clearTimeout(silenceTimer.current);
     silenceTimer.current = setTimeout(() => {
       ExpoSpeechRecognitionModule.stop();
     }, 1500);
   });
+  useSpeechRecognitionEvent("speechend", () => {
+    ExpoSpeechRecognitionModule.stop();
+  });
+  useSpeechRecognitionEvent("end", () => {
+    setRecognizing(false);
+    handleFinalTranscript(latestTranscript.current);
+  });
   useSpeechRecognitionEvent("error", (event) => {
     console.log("speech recognition error:", event.error, event.message);
   });
 
-  const handlePress = async () => {
+  const handleFinalTranscript = async (text: string) => {
+    if (!text.trim()) return;
+    const userMessage: ChatMessage = {
+      id: Date.now().toString(),
+      role: "user",
+      content: text,
+    };
+    setMessages((prev) => [...prev, userMessage]);
+    setTranscript("");
+    latestTranscript.current = "";
+    setLoading(true);
+
     try {
-      if (recognizing) {
-        ExpoSpeechRecognitionModule.stop();
-        return;
-      }
-
-      const { granted } =
-        await ExpoSpeechRecognitionModule.requestPermissionsAsync();
-      if (!granted) return;
-
-      setTranscript("");
-      ExpoSpeechRecognitionModule.start({
-        lang: "ar-SA",
-        interimResults: true,
-        continuous: true,
-        requiresOnDeviceRecognition: false,
-      });
-    } catch (error) {
-      console.log("speech recognition error:", error);
-      alert("speech recognition error: " + error);
+      const reply = await askOpenRouter(text);
+      const assistantMessage: ChatMessage = {
+        id: (Date.now() + 1).toString(),
+        role: "assistant",
+        content: reply,
+      };
+      setMessages((prev) => [...prev, assistantMessage]);
+    } catch (err) {
+      console.log("openrouter error:", err);
+    } finally {
+      setLoading(false);
     }
+  };
+
+  const handlePress = async () => {
+    if (recognizing) {
+      ExpoSpeechRecognitionModule.stop();
+      return;
+    }
+
+    const { granted } =
+      await ExpoSpeechRecognitionModule.requestPermissionsAsync();
+    if (!granted) return;
+
+    setTranscript("");
+    latestTranscript.current = "";
+    ExpoSpeechRecognitionModule.start({
+      lang: "ar-SA",
+      interimResults: true,
+      continuous: true,
+      requiresOnDeviceRecognition: false,
+    });
   };
 
   return (
@@ -79,26 +134,38 @@ export default function HomeScreen() {
       <SafeAreaView style={styles.safeArea}>
         <ThemedView style={styles.heroSection}>
           <AnimatedIcon />
-          <ThemedText type="title" style={styles.title}>
-            Welcome to&nbsp;Expo
-          </ThemedText>
         </ThemedView>
 
-        <ThemedText type="code" style={styles.code}>
-          get started
-        </ThemedText>
+        <FlatList
+          style={styles.chatList}
+          data={messages}
+          keyExtractor={(item) => item.id}
+          renderItem={({ item }) => (
+            <ThemedView
+              type="backgroundElement"
+              style={[
+                styles.messageBubble,
+                item.role === "user"
+                  ? styles.userBubble
+                  : styles.assistantBubble,
+              ]}
+            >
+              <ThemedText>{item.content}</ThemedText>
+            </ThemedView>
+          )}
+        />
 
-        <Pressable onPress={handlePress}>
-          <ThemedText type="title">
-            {recognizing ? "Stop" : "Press me"}
-          </ThemedText>
-        </Pressable>
+        {loading && <ActivityIndicator />}
 
         <ThemedView type="backgroundElement" style={styles.stepContainer}>
           <ThemedText>
-            {transcript || (recognizing ? "بيسمعك..." : "النص هيظهر هنا")}
+            {transcript || (recognizing ? "بيسمعك..." : "دوس وابدأ اتكلم")}
           </ThemedText>
         </ThemedView>
+
+        <Pressable onPress={handlePress}>
+          <ThemedText type="title">{recognizing ? "وقف" : "اتكلم"}</ThemedText>
+        </Pressable>
 
         {Platform.OS === "web" && <WebBadge />}
       </SafeAreaView>
@@ -123,15 +190,24 @@ const styles = StyleSheet.create({
   heroSection: {
     alignItems: "center",
     justifyContent: "center",
-    flex: 1,
     paddingHorizontal: Spacing.four,
     gap: Spacing.four,
   },
-  title: {
-    textAlign: "center",
+  chatList: {
+    flex: 1,
+    alignSelf: "stretch",
   },
-  code: {
-    textTransform: "uppercase",
+  messageBubble: {
+    padding: Spacing.three,
+    borderRadius: Spacing.four,
+    marginBottom: Spacing.two,
+    maxWidth: "85%",
+  },
+  userBubble: {
+    alignSelf: "flex-end",
+  },
+  assistantBubble: {
+    alignSelf: "flex-start",
   },
   stepContainer: {
     gap: Spacing.three,
